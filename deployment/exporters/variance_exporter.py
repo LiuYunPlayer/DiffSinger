@@ -407,11 +407,13 @@ class DiffSingerVarianceExporter(BaseExporter):
                 example_inputs=[
                     (
                         condition.transpose(1, 2),
-                        1  # p_sample branch
+                        1,  # p_sample branch
+                        noise  # externalized initial noise (last positional arg of forward)
                     ),
                     (
                         condition.transpose(1, 2),
-                        dummy_steps  # p_sample_plms branch
+                        dummy_steps,  # p_sample_plms branch
+                        noise
                     )
                 ]
             )
@@ -421,12 +423,14 @@ class DiffSingerVarianceExporter(BaseExporter):
                 pitch_predictor,
                 (
                     condition.transpose(1, 2),
-                    dummy_steps
+                    dummy_steps,
+                    noise
                 ),
                 self.pitch_predictor_cache_path,
                 input_names=[
                     'pitch_cond',
-                    'steps'
+                    'steps',
+                    'noise'
                 ],
                 output_names=[
                     'x_pred'
@@ -434,6 +438,10 @@ class DiffSingerVarianceExporter(BaseExporter):
                 dynamic_axes={
                     'pitch_cond': {
                         1: 'n_frames'
+                    },
+                    # noise = [1, 1, repeat_bins, n_frames]; only the frame axis is dynamic.
+                    'noise': {
+                        3: 'n_frames'
                     },
                     'x_pred': {
                         1: 'n_frames'
@@ -554,11 +562,13 @@ class DiffSingerVarianceExporter(BaseExporter):
                 example_inputs=[
                     (
                         condition.transpose(1, 2),
-                        1  # p_sample branch
+                        1,  # p_sample branch
+                        noise  # externalized initial noise (last positional arg of forward)
                     ),
                     (
                         condition.transpose(1, 2),
-                        dummy_steps  # p_sample_plms branch
+                        dummy_steps,  # p_sample_plms branch
+                        noise
                     )
                 ]
             )
@@ -568,12 +578,14 @@ class DiffSingerVarianceExporter(BaseExporter):
                 multi_var_predictor,
                 (
                     condition.transpose(1, 2),
-                    dummy_steps
+                    dummy_steps,
+                    noise
                 ),
                 self.multi_var_predictor_cache_path,
                 input_names=[
                     'variance_cond',
-                    'steps'
+                    'steps',
+                    'noise'
                 ],
                 output_names=[
                     'xs_pred'
@@ -581,6 +593,10 @@ class DiffSingerVarianceExporter(BaseExporter):
                 dynamic_axes={
                     'variance_cond': {
                         1: 'n_frames'
+                    },
+                    # noise = [1, num_variances, repeat_bins, n_frames]; only frame axis dynamic.
+                    'noise': {
+                        3: 'n_frames'
                     },
                     'xs_pred': {
                         (1 if len(self.model.variance_prediction_list) == 1 else 2): 'n_frames'
