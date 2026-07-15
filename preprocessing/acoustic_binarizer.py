@@ -193,7 +193,8 @@ class AcousticBinarizer(BaseBinarizer):
         if self.need_voicing:
             # get ground truth voicing
             voicing = get_voicing(
-                dec_waveform, None, None, length=length, domain=hparams.get('voicing_domain', 'db')
+                dec_waveform, None, None, length=length,
+                domain=hparams.get('voicing_domain', 'db'), mu=hparams.get('voicing_mu', 255.0)
             )
 
             global voicing_smooth
