@@ -44,16 +44,19 @@ ACOUSTIC_ITEM_ATTRIBUTES = [
     'breathiness',
     'voicing',
     'tension',
+    'mouth_opening',
     'key_shift',
     'speed',
 ]
 WAV_CANDIDATE_EXTENSIONS = ['.wav', '.flac']
 
 pitch_extractor: BasePE = None
+mouth_opening_estimator = None
 energy_smooth: SinusoidalSmoothingConv1d = None
 breathiness_smooth: SinusoidalSmoothingConv1d = None
 voicing_smooth: SinusoidalSmoothingConv1d = None
 tension_smooth: SinusoidalSmoothingConv1d = None
+mouth_opening_smooth: SinusoidalSmoothingConv1d = None
 
 
 class AcousticBinarizer(BaseBinarizer):
@@ -64,6 +67,10 @@ class AcousticBinarizer(BaseBinarizer):
         self.need_breathiness = hparams['use_breathiness_embed']
         self.need_voicing = hparams['use_voicing_embed']
         self.need_tension = hparams['use_tension_embed']
+        self.need_mouth_opening = (
+            hparams.get('use_mouth_opening_embed', False)
+            or hparams.get('use_shift_mouth_opening_embed', False)
+        )
         assert hparams['mel_base'] == 'e', (
             "Mel base must be set to \'e\' according to 2nd stage of the migration plan. "
             "See https://github.com/openvpi/DiffSinger/releases/tag/v2.3.0 for more details."
@@ -223,6 +230,30 @@ class AcousticBinarizer(BaseBinarizer):
                 return None
 
             processed_input['tension'] = tension.cpu().numpy()
+
+        if self.need_mouth_opening:
+            # get ground truth mouth opening
+            global mouth_opening_estimator
+            if mouth_opening_estimator is None:
+                # Lazy import: torchaudio (required by the estimator) is a
+                # manual-install dependency like torch itself; only load it
+                # when mouth-opening extraction is actually enabled.
+                from modules.estimators import CurveEstimator
+                mouth_opening_estimator = CurveEstimator(
+                    hparams['mouth_opening_estimator_ckpt'], self.device
+                )
+            mouth_opening = mouth_opening_estimator.estimate(
+                waveform, hparams['audio_sample_rate'], length
+            )
+
+            global mouth_opening_smooth
+            if mouth_opening_smooth is None:
+                mouth_opening_smooth = SinusoidalSmoothingConv1d(
+                    round(hparams['mouth_opening_smooth_width'] / self.timestep)
+                ).eval().to(self.device)
+            mouth_opening = mouth_opening_smooth(torch.from_numpy(mouth_opening).to(self.device)[None])[0]
+
+            processed_input['mouth_opening'] = mouth_opening.cpu().numpy()
 
         if hparams['use_key_shift_embed']:
             processed_input['key_shift'] = 0.

@@ -66,6 +66,7 @@ class DiffSingerAcousticONNX(DiffSingerAcoustic):
             variances: dict,
             gender: Tensor = None,
             velocity: Tensor = None,
+            shift_mouth_opening: Tensor = None,
             spk_embed: Tensor = None,
             languages: Tensor = None,
             retake: Tensor = None,
@@ -75,7 +76,9 @@ class DiffSingerAcousticONNX(DiffSingerAcoustic):
     ):
         condition = self.fs2(
             tokens, durations, f0, variances=variances,
-            gender=gender, velocity=velocity, spk_embed=spk_embed,
+            gender=gender, velocity=velocity,
+            shift_mouth_opening=shift_mouth_opening,
+            spk_embed=spk_embed,
             languages=languages, retake=retake, gt_mel=gt_mel,
             tokens_b=tokens_b, blend=blend
         )

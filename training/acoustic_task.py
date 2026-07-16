@@ -1,8 +1,13 @@
+import contextlib
+import hashlib
+import pathlib
+
 import matplotlib
 import torch
 import torch.distributions
 import torch.optim
 import torch.utils.data
+import yaml
 
 import utils
 import utils.infer_utils
@@ -16,6 +21,7 @@ from modules.toplevel import DiffSingerAcoustic, ShallowDiffusionOutput
 from modules.vocoders.registry import get_vocoder_cls
 from utils.hparams import hparams
 from utils.plot import spec_to_figure
+from utils.shift_mouth_opening_utils import calculate_shifted_opec, sample_truncated_normal
 
 matplotlib.use('Agg')
 
@@ -32,6 +38,10 @@ class AcousticDataset(BaseDataset):
             self.required_variances['voicing'] = 0.0
         if hparams['use_tension_embed']:
             self.required_variances['tension'] = 0.0
+        if hparams.get('use_mouth_opening_embed', False):
+            self.required_variances['mouth_opening'] = 0.0
+
+        self.need_mouth_opening_gt = hparams.get('use_shift_mouth_opening_embed', False)
 
         self.need_key_shift = hparams['use_key_shift_embed']
         self.need_speed = hparams['use_speed_embed']
@@ -56,6 +66,10 @@ class AcousticDataset(BaseDataset):
         })
         for v_name, v_pad in self.required_variances.items():
             batch[v_name] = utils.collate_nd([s[v_name] for s in samples], v_pad)
+        if self.need_mouth_opening_gt:
+            batch['mouth_opening_gt'] = utils.collate_nd(
+                [s['mouth_opening'] for s in samples], 0.0
+            )
         if self.need_key_shift:
             batch['key_shift'] = torch.FloatTensor([s['key_shift'] for s in samples])[:, None]
         if self.need_speed:
@@ -94,6 +108,36 @@ class AcousticTask(BaseTask):
             self.required_variances.append('voicing')
         if hparams['use_tension_embed']:
             self.required_variances.append('tension')
+        if hparams.get('use_mouth_opening_embed', False):
+            self.required_variances.append('mouth_opening')
+
+        self.use_shift_mouth_opening = hparams.get('use_shift_mouth_opening_embed', False)
+        if self.use_shift_mouth_opening:
+            assert not hparams.get('use_mouth_opening_embed', False), \
+                'use_shift_mouth_opening_embed 与 use_mouth_opening_embed 互斥，不能同时启用'
+            smo_args = hparams['shift_mouth_opening_args']
+            self.smo_alpha_sigma = float(smo_args['alpha_sigma'])
+            self.smo_replacement_prob = float(smo_args['replacement_prob'])
+            self.smo_o_min = float(smo_args['opec_min'])
+            self.smo_o_max = float(smo_args['opec_max'])
+            self.teacher_use_amp = bool(smo_args.get('teacher_use_amp', False))
+            self.teacher_ckpt_path = pathlib.Path(smo_args['teacher_ckpt_path'])
+            assert self.teacher_ckpt_path.is_file(), \
+                f'teacher_ckpt_path 不存在: {self.teacher_ckpt_path}'
+            self.teacher_dir = self.teacher_ckpt_path.parent
+            teacher_config_path = self.teacher_dir / 'config.yaml'
+            assert teacher_config_path.is_file(), \
+                f'teacher config.yaml 不存在: {teacher_config_path}'
+            with open(teacher_config_path, 'r', encoding='utf-8') as f:
+                self.teacher_hparams = yaml.safe_load(f)
+            self._validate_teacher_hparams(self.teacher_hparams)
+            self.teacher: DiffSingerAcoustic = self._build_teacher()
+            self.teacher.eval()
+            for p in self.teacher.parameters():
+                p.requires_grad_(False)
+        else:
+            self.teacher = None
+
         super()._finish_init()
 
     def _build_model(self):
@@ -101,6 +145,129 @@ class AcousticTask(BaseTask):
             vocab_size=len(self.phoneme_dictionary),
             out_dims=hparams['audio_num_mel_bins']
         )
+
+    @staticmethod
+    def _hash_file(path: pathlib.Path) -> str:
+        h = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(65536), b''):
+                h.update(chunk)
+        return h.hexdigest()
+
+    def _validate_teacher_hparams(self, t_hp: dict):
+        mel_keys = ['audio_sample_rate', 'hop_size', 'win_size', 'fft_size',
+                    'audio_num_mel_bins', 'fmin', 'fmax', 'mel_base']
+        for k in mel_keys:
+            assert t_hp.get(k) == hparams.get(k), \
+                f'teacher / student mel feature mismatch on {k!r}: ' \
+                f'teacher={t_hp.get(k)} vs student={hparams.get(k)}'
+
+        for k in ['use_lang_id', 'num_lang', 'use_spk_id', 'num_spk']:
+            assert t_hp.get(k) == hparams.get(k), \
+                f'teacher / student data space mismatch on {k!r}: ' \
+                f'teacher={t_hp.get(k)} vs student={hparams.get(k)}'
+
+        s_dicts = hparams.get('dictionaries') or {'default': hparams.get('dictionary')}
+        t_dicts = t_hp.get('dictionaries') or {'default': t_hp.get('dictionary')}
+        assert sorted(s_dicts.keys()) == sorted(t_dicts.keys()), \
+            f'teacher / student dictionary languages mismatch: ' \
+            f'teacher={sorted(t_dicts.keys())} vs student={sorted(s_dicts.keys())}'
+        for lang in s_dicts:
+            s_path = pathlib.Path(s_dicts[lang])
+            t_path = pathlib.Path(t_dicts[lang])
+            if not t_path.is_absolute():
+                t_path = self.teacher_dir / t_path
+            t_dict_in_workdir = self.teacher_dir / (
+                f'dictionary-{lang}.txt' if 'dictionaries' in t_hp else 'dictionary.txt'
+            )
+            if t_dict_in_workdir.is_file():
+                t_path = t_dict_in_workdir
+            assert s_path.is_file(), f'student dictionary missing: {s_path}'
+            assert t_path.is_file(), f'teacher dictionary missing: {t_path}'
+            assert self._hash_file(s_path) == self._hash_file(t_path), \
+                f'teacher / student dictionary content mismatch for lang {lang!r}'
+
+        s_extra = hparams.get('extra_phonemes') or []
+        t_extra = t_hp.get('extra_phonemes') or []
+        assert list(s_extra) == list(t_extra), \
+            'teacher / student extra_phonemes mismatch'
+        s_merged = hparams.get('merged_phoneme_groups') or []
+        t_merged = t_hp.get('merged_phoneme_groups') or []
+        assert list(s_merged) == list(t_merged), \
+            'teacher / student merged_phoneme_groups mismatch'
+
+        assert t_hp.get('use_mouth_opening_embed', False) is True, \
+            'teacher must have use_mouth_opening_embed=True'
+        for k in ['use_energy_embed', 'use_breathiness_embed', 'use_voicing_embed',
+                  'use_tension_embed', 'use_shift_mouth_opening_embed']:
+            assert t_hp.get(k, False) is False, \
+                f'teacher must NOT enable {k!r}'
+
+    @contextlib.contextmanager
+    def _patched_hparams(self, new_hparams: dict):
+        # Deep-copy via deepcopy to avoid leaking in-place mutations of
+        # nested values (e.g. nested dicts/lists) back into saved hparams.
+        import copy
+        saved = copy.deepcopy(dict(hparams))
+        try:
+            hparams.clear()
+            hparams.update(new_hparams)
+            hparams['infer'] = saved.get('infer', False)
+            yield
+        finally:
+            hparams.clear()
+            hparams.update(saved)
+
+    def _build_teacher(self) -> DiffSingerAcoustic:
+        with self._patched_hparams(self.teacher_hparams):
+            teacher = DiffSingerAcoustic(
+                vocab_size=len(self.phoneme_dictionary),
+                out_dims=self.teacher_hparams['audio_num_mel_bins']
+            )
+            utils.load_ckpt(
+                teacher, self.teacher_ckpt_path,
+                ckpt_steps=None, prefix_in_ckpt='model', strict=True,
+                device='cpu'
+            )
+            teacher.check_category('acoustic')
+        return teacher
+
+    def _teacher_forward(self, sample, shifted_mouth_opening, replace_mask):
+        if not replace_mask.any():
+            return None
+        idx = torch.nonzero(replace_mask, as_tuple=False).squeeze(-1)
+        B = replace_mask.shape[0]
+
+        def _slice(v):
+            if isinstance(v, torch.Tensor) and v.dim() >= 1 and v.shape[0] == B:
+                return v[idx]
+            return v
+
+        sub_smo = shifted_mouth_opening[idx]
+        with torch.no_grad(), self._patched_hparams(self.teacher_hparams):
+            t_variances = {'mouth_opening': sub_smo}
+            t_key_shift = _slice(sample.get('key_shift')) if self.teacher_hparams.get('use_key_shift_embed') else None
+            t_speed = _slice(sample.get('speed')) if self.teacher_hparams.get('use_speed_embed') else None
+            t_spk = _slice(sample.get('spk_ids')) if self.teacher_hparams.get('use_spk_id') else None
+            t_lang = _slice(sample.get('languages')) if self.teacher_hparams.get('use_lang_id') else None
+            amp_ctx = (
+                torch.autocast(device_type=sample['mel'].device.type, dtype=torch.float16)
+                if self.teacher_use_amp and sample['mel'].is_cuda
+                else contextlib.nullcontext()
+            )
+            with amp_ctx:
+                t_out: ShallowDiffusionOutput = self.teacher(
+                    _slice(sample['tokens']),
+                    mel2ph=_slice(sample['mel2ph']),
+                    f0=_slice(sample['f0']),
+                    **t_variances,
+                    key_shift=t_key_shift, speed=t_speed,
+                    spk_embed_id=t_spk, languages=t_lang,
+                    gt_mel=None, infer=True,
+                )
+        full = sample['mel'].clone()
+        full[idx] = t_out.diff_out.to(full.dtype)
+        return full
 
     # noinspection PyAttributeOutsideInit
     def build_losses_and_metrics(self):
@@ -146,9 +313,42 @@ class AcousticTask(BaseTask):
         if hparams.get('use_acoustic_retake', False) and not infer:
             acoustic_retake = random_retake_masks(sample['size'], mel2ph.shape[1], mel2ph.device)
 
+        # SHMC self-distillation: sample alpha, shift the GT mouth-opening curve, and
+        # (for a subset of samples) replace the training target with the frozen teacher's
+        # mel generated under the shifted curve.
+        shift_mouth_opening = None
+        if self.use_shift_mouth_opening and not infer:
+            # Batch-level gate: skip the entire distillation pipeline when
+            # the batch rand misses. Keeps expected number of replaced
+            # samples the same while avoiding per-step overhead when no
+            # teacher forward is needed.
+            if torch.rand(1, device=target.device).item() < self.smo_replacement_prob:
+                B = target.shape[0]
+                device = target.device
+                # Sample alpha from truncated normal (O(1) inverse-CDF)
+                alpha = sample_truncated_normal(
+                    B, self.smo_alpha_sigma,
+                    lo=-1.0, hi=1.0,
+                    device=device,
+                ).to(target.dtype)
+                # Per-sample mask so teacher only runs on replaced items
+                replace_mask = torch.rand(B, device=device) < self.smo_replacement_prob
+                # Frame-level shift_mouth_opening embedding
+                mouth_opening_gt = sample['mouth_opening_gt'].to(device=device, dtype=target.dtype)
+                shift_mouth_opening = alpha[:, None].expand_as(target[:, :, 0])
+                shifted_mouth_opening = calculate_shifted_opec(
+                    mouth_opening_gt, shift_mouth_opening,
+                    o_min=self.smo_o_min, o_max=self.smo_o_max,
+                )
+                # Teacher replaces GT mel for the chosen items
+                new_target = self._teacher_forward(sample, shifted_mouth_opening, replace_mask)
+                if new_target is not None:
+                    target = new_target
+
         output: ShallowDiffusionOutput = self.model(
             txt_tokens, mel2ph=mel2ph, f0=f0, **variances,
             key_shift=key_shift, speed=speed,
+            shift_mouth_opening=shift_mouth_opening,
             spk_embed_id=spk_embed_id, languages=languages,
             gt_mel=target, acoustic_retake=acoustic_retake, infer=infer
         )
