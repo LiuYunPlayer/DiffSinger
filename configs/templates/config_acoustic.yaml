@@ -67,7 +67,7 @@ shift_mouth_opening_args:
   replacement_prob: 0.25
   opec_min: 0.06
   opec_max: 0.8
-  teacher_use_amp: false
+  teacher_use_amp: true
 
 augmentation_args:
   random_pitch_shifting:

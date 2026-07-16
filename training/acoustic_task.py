@@ -315,17 +315,20 @@ class AcousticTask(BaseTask):
 
         shift_mouth_opening = None
         if self.use_shift_mouth_opening and not infer:
-            if torch.rand(1, device=target.device).item() < self.smo_replacement_prob:
-                B = target.shape[0]
-                device = target.device
-                alpha = sample_truncated_normal(
-                    B, self.smo_alpha_sigma,
-                    lo=-1.0, hi=1.0,
-                    device=device,
-                ).to(target.dtype)
-                replace_mask = torch.rand(B, device=device) < self.smo_replacement_prob
-                mouth_opening_gt = sample['mouth_opening_gt'].to(device=device, dtype=target.dtype)
-                shift_mouth_opening = alpha[:, None].expand_as(target[:, :, 0])
+            B = target.shape[0]
+            device = target.device
+            replace_mask = torch.rand(B, device=device) < self.smo_replacement_prob
+            alpha = sample_truncated_normal(
+                B, self.smo_alpha_sigma,
+                lo=-1.0, hi=1.0,
+                device=device,
+            ).to(target.dtype)
+            # Non-replaced samples must see alpha=0 so the model does not learn
+            # "non-zero alpha → GT mel" (which would teach it to ignore alpha).
+            alpha = torch.where(replace_mask, alpha, torch.zeros_like(alpha))
+            mouth_opening_gt = sample['mouth_opening_gt'].to(device=device, dtype=target.dtype)
+            shift_mouth_opening = alpha[:, None].expand_as(target[:, :, 0])
+            if replace_mask.any():
                 shifted_mouth_opening = calculate_shifted_opec(
                     mouth_opening_gt, shift_mouth_opening,
                     o_min=self.smo_o_min, o_max=self.smo_o_max,
