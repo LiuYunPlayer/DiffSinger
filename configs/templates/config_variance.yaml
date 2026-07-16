@@ -68,7 +68,7 @@ mouth_opening_min: 0.0
 mouth_opening_max: 1.0
 # When predict_mouth_opening is true, please make sure the BiLSTM curve estimator
 # checkpoint (and its sibling config.yaml) exists at the path below.
-mouth_opening_estimator_ckpt: 'checkpoints/mouth_opening/model.ckpt'
+mouth_opening_estimator_ckpt: 'checkpoints/r3moe/0508_s2k_noise_aug_0.15/ema_model_4.pt'
 
 enc_ffn_kernel_size: 3
 use_rope: true

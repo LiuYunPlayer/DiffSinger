@@ -95,7 +95,7 @@ tension_smooth_width: 0.06
 mouth_opening_min: 0.0
 mouth_opening_max: 1.0
 mouth_opening_smooth_width: 0.06
-mouth_opening_estimator_ckpt: 'checkpoints/mouth_opening/model.ckpt'
+mouth_opening_estimator_ckpt: 'checkpoints/r3moe/0508_s2k_noise_aug_0.15/ema_model_4.pt'
 
 variances_prediction_args:
   total_repeat_bins: 72

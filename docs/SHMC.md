@@ -96,7 +96,7 @@ SHMC 的做法是把操作面从**绝对曲线**换成**相对偏移量 alpha �
 
 | 参数 | 默认值 | 说明 |
 |---|---|---|
-| `mouth_opening_estimator_ckpt` | `checkpoints/mouth_opening/model.ckpt` | R3MOE 曲线估计器 checkpoint 路径。**其同目录下必须存在配套的 `config.yaml`**（记录估计器的 mel 参数与值域）。二值化时若文件不存在会直接报错。 |
+| `mouth_opening_estimator_ckpt` | `checkpoints/r3moe/0508_s2k_noise_aug_0.15/ema_model_4.pt` | R3MOE 曲线估计器 checkpoint 路径。**其同目录下必须存在配套的 `config.yaml`**（记录估计器的 mel 参数与值域）。二值化时若文件不存在会直接报错。 |
 | `mouth_opening_smooth_width` | `0.06` | 正弦平滑窗宽（秒），与 energy/breathiness 等其他 variance 的平滑方式一致。 |
 
 估计器输出的 OPEC 曲线理论值域为 `[0, 1]`（0 = 闭口，1 = 全开；

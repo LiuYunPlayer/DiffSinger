@@ -58,7 +58,7 @@ use_shift_mouth_opening_embed: false
 
 # When use_mouth_opening_embed is true, please make sure the BiLSTM curve estimator
 # checkpoint (and its sibling config.yaml) exists at the path below.
-mouth_opening_estimator_ckpt: 'checkpoints/mouth_opening/model.ckpt'
+mouth_opening_estimator_ckpt: 'checkpoints/r3moe/0508_s2k_noise_aug_0.15/ema_model_4.pt'
 
 use_key_shift_embed: true
 use_speed_embed: true
