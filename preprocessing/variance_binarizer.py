@@ -9,6 +9,7 @@ import torch
 import torch.nn.functional as F
 from scipy import interpolate
 
+import modules.estimators
 from basics.base_binarizer import BaseBinarizer, BinarizationError
 from basics.base_pe import BasePE
 from modules.fastspeech.tts_modules import LengthRegulator
@@ -547,11 +548,7 @@ class VarianceBinarizer(BaseBinarizer):
             if mouth_opening is None:
                 global mouth_opening_estimator
                 if mouth_opening_estimator is None:
-                    # Lazy import: torchaudio (required by the estimator) is a
-                    # manual-install dependency like torch itself; only load it
-                    # when mouth-opening extraction is actually enabled.
-                    from modules.estimators import CurveEstimator
-                    mouth_opening_estimator = CurveEstimator(
+                    mouth_opening_estimator = modules.estimators.CurveEstimator(
                         hparams['mouth_opening_estimator_ckpt'], self.device
                     )
                 mouth_opening = mouth_opening_estimator.estimate(

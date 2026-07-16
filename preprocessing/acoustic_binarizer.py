@@ -16,6 +16,7 @@ import librosa
 import numpy as np
 import torch
 
+import modules.estimators
 from basics.base_binarizer import BaseBinarizer
 from basics.base_pe import BasePE
 from modules.fastspeech.tts_modules import LengthRegulator
@@ -51,7 +52,7 @@ ACOUSTIC_ITEM_ATTRIBUTES = [
 WAV_CANDIDATE_EXTENSIONS = ['.wav', '.flac']
 
 pitch_extractor: BasePE = None
-mouth_opening_estimator = None
+mouth_opening_estimator: modules.estimators.CurveEstimator = None
 energy_smooth: SinusoidalSmoothingConv1d = None
 breathiness_smooth: SinusoidalSmoothingConv1d = None
 voicing_smooth: SinusoidalSmoothingConv1d = None
@@ -235,11 +236,7 @@ class AcousticBinarizer(BaseBinarizer):
             # get ground truth mouth opening
             global mouth_opening_estimator
             if mouth_opening_estimator is None:
-                # Lazy import: torchaudio (required by the estimator) is a
-                # manual-install dependency like torch itself; only load it
-                # when mouth-opening extraction is actually enabled.
-                from modules.estimators import CurveEstimator
-                mouth_opening_estimator = CurveEstimator(
+                mouth_opening_estimator = modules.estimators.CurveEstimator(
                     hparams['mouth_opening_estimator_ckpt'], self.device
                 )
             mouth_opening = mouth_opening_estimator.estimate(
