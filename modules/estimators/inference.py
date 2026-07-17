@@ -124,7 +124,17 @@ class CurveEstimator:
         self.model = BiLSTMCurveEstimator(
             **utils.filter_kwargs(model_args, BiLSTMCurveEstimator)
         )
-        self.model.load_state_dict(torch.load(model_path, map_location="cpu"))
+        # k_filter is R3MOE's per-speaker output calibration head, only active when
+        # spk_id is passed — infer() never passes it, so the weights are unused here.
+        # Its serialized structure differs across R3MOE generations (pre-2026-04-28
+        # ckpts: nn.Parameter 'k_filter'; later ckpts: nn.Embedding 'k_filter.weight'),
+        # so drop it and load the rest strictly to accept both generations.
+        state_dict = torch.load(model_path, map_location="cpu")
+        state_dict = {k: v for k, v in state_dict.items() if not k.startswith("k_filter")}
+        missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
+        assert not unexpected, f"unexpected keys in curve estimator ckpt: {unexpected}"
+        bad_missing = [k for k in missing if not k.startswith("k_filter")]
+        assert not bad_missing, f"missing keys in curve estimator ckpt: {bad_missing}"
         self.model.eval()
         self.model.to(device)
         self.resample_kernels = {}
