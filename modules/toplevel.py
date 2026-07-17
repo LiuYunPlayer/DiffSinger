@@ -83,11 +83,13 @@ class DiffSingerAcoustic(CategorizedModule, ParameterAdaptorModule):
 
     def forward(
             self, txt_tokens, mel2ph, f0, key_shift=None, speed=None,
+            shift_mouth_opening=None,
             spk_embed_id=None, languages=None, gt_mel=None,
             acoustic_retake=None, infer=True, **kwargs
     ) -> ShallowDiffusionOutput:
         condition = self.fs2(
             txt_tokens, mel2ph, f0, key_shift=key_shift, speed=speed,
+            shift_mouth_opening=shift_mouth_opening,
             spk_embed_id=spk_embed_id, languages=languages,
             acoustic_retake=acoustic_retake, gt_mel=gt_mel,
             **kwargs
@@ -215,6 +217,7 @@ class DiffSingerVariance(CategorizedModule, ParameterAdaptorModule):
             'breathiness': 1. / 96,
             'voicing': 1. / 96,
             'tension': 0.1,
+            'mouth_opening': 1.,
             'key_shift': 1. / 12,
             'speed': 1.
         }
@@ -223,6 +226,7 @@ class DiffSingerVariance(CategorizedModule, ParameterAdaptorModule):
             'breathiness': 1.,
             'voicing': 1.,
             'tension': 1.,
+            'mouth_opening': 1.,
             'key_shift': 1.,
             'speed': 1.
         }

@@ -54,8 +54,21 @@ use_voicing_embed: false
 use_tension_embed: false
 voicing_domain: 'db'
 
+use_mouth_opening_embed: false
+use_shift_mouth_opening_embed: false
+
+mouth_opening_estimator_ckpt: 'checkpoints/r3moe/0508_s2k_noise_aug_0.15/ema_model_4.pt'
+
 use_key_shift_embed: true
 use_speed_embed: true
+
+shift_mouth_opening_args:
+  teacher_ckpt_path: ''
+  alpha_sigma: 0.5
+  replacement_prob: 0.25
+  opec_min: 0.06
+  opec_max: 0.8
+  teacher_use_amp: true
 
 augmentation_args:
   random_pitch_shifting:
