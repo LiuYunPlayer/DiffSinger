@@ -45,7 +45,10 @@ mel_base: 'e'
 energy_smooth_width: 0.06
 breathiness_smooth_width: 0.06
 voicing_smooth_width: 0.06
+voicing_domain: 'db'
 tension_smooth_width: 0.06
+mouth_opening_smooth_width: 0.06
+mouth_opening_estimator_ckpt: 'checkpoints/r3moe/0508_s2k_noise_aug_0.15/ema_model_4.pt'
 
 use_lang_id: false
 num_lang: 1
@@ -57,9 +60,19 @@ use_energy_embed: false
 use_breathiness_embed: false
 use_voicing_embed: false
 use_tension_embed: false
+use_mouth_opening_embed: false
 use_key_shift_embed: false
 use_speed_embed: false
 use_acoustic_retake: false  # note-level acoustic retake (condition-level/soft inpainting)
+
+use_shift_mouth_opening_embed: false
+shift_mouth_opening_args:
+  teacher_ckpt_path: ''
+  alpha_sigma: 0.5
+  replacement_prob: 0.25
+  opec_min: 0.06
+  opec_max: 0.8
+  teacher_use_amp: true
 
 diffusion_type: reflow
 time_scale_factor: 1000
