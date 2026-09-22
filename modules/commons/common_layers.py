@@ -175,6 +175,47 @@ class ATanGLU(nn.Module):
             return out * torch.atan(gate)
 
 
+class SoftSignGLUFunction(torch.autograd.Function):
+    """ATanGLUFunction-style memory trick for SoftSignGLU.
+
+    softsign'(x) = 1/(1+|x|)^2 = (1-|softsign(x)|)^2, so both partial
+    derivatives of y = out * softsign(gate) are precomputable in forward:
+      dy/dout = softsign(gate)
+      dy/dgate = out * (1-|softsign(gate)|)^2
+    Saves 2 tensors (vs 3 for naive autograd) and backward is two pure
+    multiplies with no softsign recompute.
+    """
+    @staticmethod
+    def forward(ctx, out, gate):
+        ss_gate = torch.nn.functional.softsign(gate)
+        decay_out = out * (1.0 - ss_gate.abs()).square()
+        ctx.save_for_backward(ss_gate, decay_out)
+        return out * ss_gate
+
+    @staticmethod
+    def backward(ctx, grad_output):
+        ss_gate, decay_out = ctx.saved_tensors
+        return grad_output * ss_gate, grad_output * decay_out
+
+
+class SoftSignGLU(nn.Module):
+    """Gated Linear Unit with SoftSign gate: out * softsign(gate).
+
+    More numerically stable than ATanGLU (no approximation needed in
+    Triton kernels) while providing similar gating behavior.
+    """
+    def __init__(self, dim=-1):
+        super().__init__()
+        self.dim = dim
+
+    def forward(self, x):
+        out, gate = torch.split(x, x.size(self.dim) // 2, dim=self.dim)
+        if self.training:
+            return SoftSignGLUFunction.apply(out, gate)
+        else:
+            return out * torch.nn.functional.softsign(gate)
+
+
 class AdamWConv1d(torch.nn.Conv1d):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -204,11 +245,14 @@ class Mixed_LayerNorm(nn.Module):
             condition_channels: int,
             beta_distribution_concentration: float = 0.2,
             eps: float = 1e-5,
-            bias: bool = True
+            bias: bool = True,
+            *,
+            shuffle_speakers: bool = False
     ):
         super().__init__()
         self.channels = channels
         self.eps = eps
+        self.shuffle_speakers = shuffle_speakers
 
         self.beta_distribution = torch.distributions.Beta(
             beta_distribution_concentration,
@@ -234,6 +278,8 @@ class Mixed_LayerNorm(nn.Module):
 
         if not self.training or x.size(0) == 1:
             return gammas * x + betas
+        if not self.shuffle_speakers:
+            return gammas * x + betas
 
         shuffle_indices = torch.randperm(x.size(0), device=x.device)
         shuffled_betas = betas[shuffle_indices]
@@ -246,6 +292,22 @@ class Mixed_LayerNorm(nn.Module):
         return mixed_gammas * x + mixed_betas
 
 
+class MixedPrecisionLayerNorm(nn.LayerNorm):
+    """LayerNorm that keeps fp16/bf16 activations under AMP autocast"""
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        with torch.autocast(device_type=x.device.type, enabled=False):
+            weight = self.weight
+            bias = self.bias
+            if weight is not None and weight.dtype != x.dtype:
+                weight = weight.to(x.dtype)
+            if bias is not None and bias.dtype != x.dtype:
+                bias = bias.to(x.dtype)
+            return F.layer_norm(
+                x, self.normalized_shape, weight, bias, self.eps
+            )
+            
+            
 class TransformerFFNLayer(nn.Module):
     def __init__(self, hidden_size, filter_size, kernel_size=1, dropout=0., act='gelu'):
         super().__init__()
@@ -355,7 +417,7 @@ class MultiheadSelfAttentionWithRoPE(nn.Module):
 class EncSALayer(nn.Module):
     def __init__(self, c, num_heads, dropout, attention_dropout=0.1,
                  relu_dropout=0.1, kernel_size=9, act='gelu', rotary_embed=None,
-                 layer_idx=None, mix_ln_layer=None
+                 layer_idx=None, mix_ln_layer=None, mixln_shuffle_speakers=False
                  ):
         super().__init__()
         self.dropout = dropout
@@ -365,7 +427,7 @@ class EncSALayer(nn.Module):
                 and layer_idx in mix_ln_layer
         )
         if self.use_mix_ln:
-            self.layer_norm1 = Mixed_LayerNorm(c, c)
+            self.layer_norm1 = Mixed_LayerNorm(c, c, shuffle_speakers=mixln_shuffle_speakers)
         else:
             self.layer_norm1 = LayerNorm(c)
         # Always use the in-house manual attention. With rotary_embed=None this
@@ -378,7 +440,7 @@ class EncSALayer(nn.Module):
             c, num_heads, dropout=attention_dropout, bias=False, rotary_embed=rotary_embed
         )
         if self.use_mix_ln:
-            self.layer_norm2 = Mixed_LayerNorm(c, c)
+            self.layer_norm2 = Mixed_LayerNorm(c, c, shuffle_speakers=mixln_shuffle_speakers)
         else:
             self.layer_norm2 = LayerNorm(c)
         self.ffn = TransformerFFNLayer(
@@ -422,6 +484,6 @@ class SinusoidalPosEmb(nn.Module):
         half_dim = self.dim // 2
         emb = math.log(10000) / (half_dim - 1)
         emb = torch.exp(torch.arange(half_dim, device=device) * -emb)
-        emb = x.unsqueeze(-1) * emb.unsqueeze(0)
+        emb = x.unsqueeze(-1) * emb
         emb = torch.cat((emb.sin(), emb.cos()), dim=-1)
         return emb
